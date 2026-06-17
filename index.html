@@ -1099,19 +1099,33 @@ async function dbUpdateSessionTitle(sessionId, title) {
 }
 
 // ── Message DB ──────────────────────────────────────────────
+function cacheMessages(sessionId, msgs) {
+  localStorage.setItem(`session_${sessionId}`, JSON.stringify(msgs));
+}
+
+function getCachedMessages(sessionId) {
+  try { return JSON.parse(localStorage.getItem(`session_${sessionId}`) || '[]'); } catch { return []; }
+}
+
 async function dbSaveMessage(agent, role, content, sessionId) {
   await sb.from('agent_memory').insert({ agent, role, content, session_id: sessionId });
 }
 
 async function dbLoadSessionMessages(sessionId) {
+  // Try Supabase first, fall back to localStorage cache
   const { data } = await sb.from('agent_memory')
     .select('id, role, content, created_at')
     .eq('session_id', sessionId)
     .order('created_at', { ascending: true });
-  return (data || []).map(m => ({
-    id: m.id, role: m.role, content: m.content,
-    time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  }));
+  if (data && data.length > 0) {
+    const msgs = data.map(m => ({
+      id: m.id, role: m.role, content: m.content,
+      time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }));
+    cacheMessages(sessionId, msgs);
+    return msgs;
+  }
+  return getCachedMessages(sessionId);
 }
 
 // ── Memory DB (session_id IS NULL) ──────────────────────────
@@ -1636,6 +1650,7 @@ async function sendMessage(key) {
     typingEl.remove();
     conversations[key].push({ role: 'agent', content: reply, time: now() });
     await dbSaveMessage(key, 'agent', reply, currentSessionId[key]);
+    cacheMessages(currentSessionId[key], conversations[key]);
     renderMessages(key);
   } catch(e) {
     typingEl.remove();
