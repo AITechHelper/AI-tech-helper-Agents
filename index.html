@@ -1058,6 +1058,21 @@ async function dbClearMemory(agent) {
   await sb.from('agent_memory').delete().eq('agent', agent);
 }
 
+async function dbGetTeamContext() {
+  const agents = ['alex', 'jordan', 'riley'];
+  const summaries = await Promise.all(agents.map(async a => {
+    const { data } = await sb.from('agent_memory')
+      .select('role, content, created_at')
+      .eq('agent', a)
+      .order('created_at', { ascending: false })
+      .limit(10);
+    if (!data || data.length === 0) return null;
+    const lines = data.reverse().map(m => `${m.role === 'user' ? 'Will' : AGENTS[a].name}: ${m.content}`).join('\n');
+    return `--- ${AGENTS[a].name} (${AGENTS[a].role}) recent activity ---\n${lines}`;
+  }));
+  return summaries.filter(Boolean).join('\n\n');
+}
+
 let pipelineData = JSON.parse(localStorage.getItem('pipelineData') || 'null') || PIPELINE_STAGES.map(s => ({ ...s, items: s.items.map(i => ({ ...i })) }));
 let agentSettings = JSON.parse(localStorage.getItem('agentSettings') || 'null') || {};
 let conversations = { marcus: [], alex: [], jordan: [], riley: [] };
@@ -1400,7 +1415,13 @@ async function sendMessage(key) {
   document.getElementById(`sendBtn-${key}`).disabled = true;
 
   try {
-    const systemPrompt = agentSettings[key]?.systemPrompt || AGENTS[key].systemPrompt;
+    let systemPrompt = agentSettings[key]?.systemPrompt || AGENTS[key].systemPrompt;
+    if (key === 'marcus') {
+      const teamContext = await dbGetTeamContext();
+      if (teamContext) {
+        systemPrompt += `\n\n=== LIVE TEAM ACTIVITY (last 10 messages per agent) ===\n${teamContext}\n\nUse this to stay informed. Reference it when relevant.`;
+      }
+    }
     const apiMessages = conversations[key].map(m => ({ role: m.role === 'agent' ? 'assistant' : 'user', content: m.content }));
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
