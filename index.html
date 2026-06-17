@@ -1058,17 +1058,16 @@ async function dbClearMemory(agent) {
   await sb.from('agent_memory').delete().eq('agent', agent);
 }
 
-async function dbGetTeamContext() {
+async function dbGetAllTeamMemory() {
   const agents = ['alex', 'jordan', 'riley'];
   const summaries = await Promise.all(agents.map(async a => {
     const { data } = await sb.from('agent_memory')
       .select('role, content, created_at')
       .eq('agent', a)
-      .order('created_at', { ascending: false })
-      .limit(10);
+      .order('created_at', { ascending: true });
     if (!data || data.length === 0) return null;
-    const lines = data.reverse().map(m => `${m.role === 'user' ? 'Will' : AGENTS[a].name}: ${m.content}`).join('\n');
-    return `--- ${AGENTS[a].name} (${AGENTS[a].role}) recent activity ---\n${lines}`;
+    const lines = data.map(m => `${m.role === 'user' ? 'Will' : AGENTS[a].name}: ${m.content}`).join('\n');
+    return `--- Everything ${AGENTS[a].name} (${AGENTS[a].role}) has ever discussed with Will ---\n${lines}`;
   }));
   return summaries.filter(Boolean).join('\n\n');
 }
@@ -1417,9 +1416,9 @@ async function sendMessage(key) {
   try {
     let systemPrompt = agentSettings[key]?.systemPrompt || AGENTS[key].systemPrompt;
     if (key === 'marcus') {
-      const teamContext = await dbGetTeamContext();
-      if (teamContext) {
-        systemPrompt += `\n\n=== LIVE TEAM ACTIVITY (last 10 messages per agent) ===\n${teamContext}\n\nUse this to stay informed. Reference it when relevant.`;
+      const teamMemory = await dbGetAllTeamMemory();
+      if (teamMemory) {
+        systemPrompt += `\n\n=== COMPLETE TEAM MEMORY ===\nYou have full knowledge of every conversation Will has had with your team. Use this to stay informed, catch inconsistencies, and lead effectively.\n\n${teamMemory}`;
       }
     }
     const apiMessages = conversations[key].map(m => ({ role: m.role === 'agent' ? 'assistant' : 'user', content: m.content }));
