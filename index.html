@@ -248,7 +248,7 @@
   .content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
   /* AGENT VIEW */
-  .agent-view { flex: 1; display: none; flex-direction: column; overflow: hidden; }
+  .agent-view { flex: 1; min-height: 0; display: none; flex-direction: column; overflow: hidden; }
   .agent-view.active { display: flex; }
 
   .agent-header {
@@ -340,7 +340,7 @@
   .agent-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
 
   /* CHAT */
-  .chat-pane { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+  .chat-pane { flex: 1; min-height: 0; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
   .chat-pane::-webkit-scrollbar { width: 4px; }
   .chat-pane::-webkit-scrollbar-thumb { background: var(--gray-200); border-radius: 2px; }
 
@@ -504,7 +504,7 @@
   .send-btn svg { width: 16px; height: 16px; fill: white; }
 
   /* SETTINGS PANEL */
-  .settings-pane { flex: 1; overflow-y: auto; padding: 24px; display: none; flex-direction: column; gap: 20px; }
+  .settings-pane { flex: 1; min-height: 0; overflow-y: auto; padding: 24px; display: none; flex-direction: column; gap: 20px; }
   .settings-pane.active { display: flex; }
 
   .settings-card {
