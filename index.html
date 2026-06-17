@@ -1435,17 +1435,11 @@ function toggleAutonomous(key) {
 }
 
 async function newChat(key) {
-  // Summarize current session before starting new one
   if (currentSessionId[key]) {
     autoSummarize(key, currentSessionId[key]);
-    // Auto-title the session from first user message
-    const firstMsg = conversations[key].find(m => m.role === 'user');
-    if (firstMsg) {
-      const title = firstMsg.content.slice(0, 40) + (firstMsg.content.length > 40 ? '…' : '');
-      await dbUpdateSessionTitle(currentSessionId[key], title);
-    }
   }
-  currentSessionId[key] = await dbCreateSession(key);
+  const { data } = await sb.from('sessions').insert({ agent: key, title: 'New Chat' }).select().single();
+  currentSessionId[key] = data.id;
   conversations[key] = [];
   agentSessions[key] = await dbLoadSessions(key);
   renderSidebar();
@@ -1574,6 +1568,13 @@ async function sendMessage(key) {
 
   conversations[key].push({ role: 'user', content: text, time: now() });
   dbSaveMessage(key, 'user', text, currentSessionId[key]);
+  // Title the session from the first user message
+  if (conversations[key].filter(m => m.role === 'user').length === 1) {
+    const title = text.slice(0, 40) + (text.length > 40 ? '…' : '');
+    dbUpdateSessionTitle(currentSessionId[key], title).then(() => {
+      agentSessions[key] = dbLoadSessions(key).then(s => { agentSessions[key] = s; renderSidebar(); });
+    });
+  }
   input.value = '';
   input.style.height = 'auto';
   renderMessages(key);
