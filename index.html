@@ -1447,8 +1447,14 @@ async function newChat(key) {
 }
 
 async function loadSession(key, sessionId) {
+  // Already on this session — just re-render from memory, don't reload
+  if (currentSessionId[key] === sessionId) {
+    renderMessages(key);
+    return;
+  }
   currentSessionId[key] = sessionId;
-  conversations[key] = await dbLoadSessionMessages(sessionId);
+  const msgs = await dbLoadSessionMessages(sessionId);
+  conversations[key] = msgs;
   renderMessages(key);
   renderSidebar();
 }
@@ -1567,7 +1573,7 @@ async function sendMessage(key) {
   if (!text) return;
 
   conversations[key].push({ role: 'user', content: text, time: now() });
-  dbSaveMessage(key, 'user', text, currentSessionId[key]);
+  await dbSaveMessage(key, 'user', text, currentSessionId[key]);
   // Title the session from the first user message
   if (conversations[key].filter(m => m.role === 'user').length === 1) {
     const title = text.slice(0, 40) + (text.length > 40 ? '…' : '');
@@ -1629,7 +1635,7 @@ async function sendMessage(key) {
     const reply = data.content?.[0]?.text || 'Something went wrong.';
     typingEl.remove();
     conversations[key].push({ role: 'agent', content: reply, time: now() });
-    dbSaveMessage(key, 'agent', reply, currentSessionId[key]);
+    await dbSaveMessage(key, 'agent', reply, currentSessionId[key]);
     renderMessages(key);
   } catch(e) {
     typingEl.remove();
