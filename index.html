@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI Tech Helper — Command Center</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
 
@@ -1030,6 +1031,33 @@ const PIPELINE_STAGES = [
   ]},
 ];
 
+// Supabase
+const sb = supabase.createClient(
+  'https://fbqdjjatedxuozbgostq.supabase.co',
+  'sb_publishable_hgr0b3IWmPXbXNINwDcigA_riscUyBk'
+);
+
+async function dbSaveMessage(agent, role, content) {
+  await sb.from('agent_memory').insert({ agent, role, content });
+}
+
+async function dbLoadMessages(agent) {
+  const { data } = await sb.from('agent_memory')
+    .select('role, content, created_at')
+    .eq('agent', agent)
+    .order('created_at', { ascending: true })
+    .limit(100);
+  return (data || []).map(m => ({
+    role: m.role,
+    content: m.content,
+    time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }));
+}
+
+async function dbClearMemory(agent) {
+  await sb.from('agent_memory').delete().eq('agent', agent);
+}
+
 let pipelineData = JSON.parse(localStorage.getItem('pipelineData') || 'null') || PIPELINE_STAGES.map(s => ({ ...s, items: s.items.map(i => ({ ...i })) }));
 let agentSettings = JSON.parse(localStorage.getItem('agentSettings') || 'null') || {};
 let conversations = { marcus: [], alex: [], jordan: [], riley: [] };
@@ -1246,7 +1274,7 @@ function toggleAutonomous(key) {
   saveSettings();
 }
 
-function switchAgent(key) {
+async function switchAgent(key) {
   currentAgent = key;
   currentView = 'agent';
   document.querySelectorAll('.agent-view').forEach(v => v.classList.remove('active'));
@@ -1258,6 +1286,10 @@ function switchAgent(key) {
   document.getElementById('contentArea').style.flex = '1';
   renderSidebar();
   updateNavTabs(key);
+  // Load persisted messages if not already in memory
+  if (conversations[key].length === 0) {
+    conversations[key] = await dbLoadMessages(key);
+  }
   showAgentTab(key, 'chat');
 }
 
@@ -1350,6 +1382,7 @@ async function sendMessage(key) {
   if (!text) return;
 
   conversations[key].push({ role: 'user', content: text, time: now() });
+  dbSaveMessage(key, 'user', text);
   input.value = '';
   input.style.height = 'auto';
   renderMessages(key);
@@ -1378,6 +1411,7 @@ async function sendMessage(key) {
     const reply = data.content?.[0]?.text || 'Something went wrong.';
     typingEl.remove();
     conversations[key].push({ role: 'agent', content: reply, time: now() });
+    dbSaveMessage(key, 'agent', reply);
     renderMessages(key);
   } catch(e) {
     typingEl.remove();
