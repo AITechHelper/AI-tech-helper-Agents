@@ -808,6 +808,49 @@
     font-family: 'Inter', sans-serif;
   }
 
+  .new-chat-btn {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1.5px solid var(--blue);
+    background: var(--blue-pale);
+    color: var(--blue);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    margin-bottom: 4px;
+    transition: all 0.15s;
+  }
+  .new-chat-btn:hover { background: var(--blue); color: white; }
+
+  .sidebar-session {
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+    border: 1.5px solid transparent;
+  }
+  .sidebar-session:hover { background: var(--gray-100); }
+  .sidebar-session.active { background: var(--blue-pale); border-color: var(--blue); }
+  .sidebar-session-title { font-size: 12px; font-weight: 600; color: var(--navy); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sidebar-session-date { font-size: 10px; color: var(--gray-400); margin-top: 2px; }
+
+  .pin-btn {
+    background: none;
+    border: none;
+    font-size: 10px;
+    color: var(--gray-400);
+    cursor: pointer;
+    margin-left: 8px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    transition: all 0.15s;
+  }
+  .pin-btn:hover { background: var(--blue-pale); color: var(--blue); }
+
   @media (max-width: 768px) {
     .sidebar { display: none; }
     .stats-grid { grid-template-columns: 1fr 1fr; }
@@ -1037,44 +1080,108 @@ const sb = supabase.createClient(
   'sb_publishable_hgr0b3IWmPXbXNINwDcigA_riscUyBk'
 );
 
-async function dbSaveMessage(agent, role, content) {
-  await sb.from('agent_memory').insert({ agent, role, content });
+// API key stored in localStorage — entered once in Settings
+function getApiKey() { return localStorage.getItem('anthropicKey') || ''; }
+
+// ── Session DB ──────────────────────────────────────────────
+async function dbCreateSession(agent) {
+  const { data } = await sb.from('sessions')
+    .insert({ agent, title: 'New Chat' }).select().single();
+  return data.id;
 }
 
-async function dbLoadMessages(agent) {
-  const { data } = await sb.from('agent_memory')
-    .select('role, content, created_at')
+async function dbLoadSessions(agent) {
+  const { data } = await sb.from('sessions')
+    .select('id, title, created_at')
     .eq('agent', agent)
-    .order('created_at', { ascending: true })
-    .limit(100);
+    .order('created_at', { ascending: false });
+  return data || [];
+}
+
+async function dbUpdateSessionTitle(sessionId, title) {
+  await sb.from('sessions').update({ title }).eq('id', sessionId);
+}
+
+// ── Message DB ──────────────────────────────────────────────
+async function dbSaveMessage(agent, role, content, sessionId) {
+  await sb.from('agent_memory').insert({ agent, role, content, session_id: sessionId });
+}
+
+async function dbLoadSessionMessages(sessionId) {
+  const { data } = await sb.from('agent_memory')
+    .select('id, role, content, created_at')
+    .eq('session_id', sessionId)
+    .order('created_at', { ascending: true });
   return (data || []).map(m => ({
-    role: m.role,
-    content: m.content,
+    id: m.id, role: m.role, content: m.content,
     time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }));
 }
 
-async function dbClearMemory(agent) {
-  await sb.from('agent_memory').delete().eq('agent', agent);
+// ── Memory DB (session_id IS NULL) ──────────────────────────
+async function dbSaveMemory(agent, content) {
+  await sb.from('agent_memory').insert({ agent, role: 'memory', content, session_id: null });
 }
 
-async function dbGetAllTeamMemory() {
+async function dbLoadMemories(agent) {
+  const { data } = await sb.from('agent_memory')
+    .select('id, content, created_at')
+    .eq('agent', agent)
+    .is('session_id', null)
+    .order('created_at', { ascending: true });
+  return data || [];
+}
+
+async function dbDeleteMemory(id) {
+  await sb.from('agent_memory').delete().eq('id', id);
+}
+
+// ── Auto-summarize session → memory ─────────────────────────
+async function autoSummarize(agent, sessionId) {
+  const msgs = await dbLoadSessionMessages(sessionId);
+  if (msgs.length < 3) return;
+  const key = getApiKey();
+  if (!key) return;
+  const transcript = msgs
+    .map(m => `${m.role === 'user' ? 'Will' : AGENTS[agent].name}: ${m.content}`)
+    .join('\n');
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 120,
+        messages: [{ role: 'user', content: `Summarize this conversation in 2-3 short sentences. Focus on decisions made, tasks assigned, and key info. Be specific.\n\n${transcript}` }]
+      })
+    });
+    const data = await res.json();
+    const summary = data.content?.[0]?.text;
+    if (summary) await dbSaveMemory(agent, summary);
+  } catch(e) { console.error('Summarize failed', e); }
+}
+
+// ── Marcus team memory ───────────────────────────────────────
+async function dbGetTeamMemory() {
   const agents = ['alex', 'jordan', 'riley'];
-  const summaries = await Promise.all(agents.map(async a => {
-    const { data } = await sb.from('agent_memory')
-      .select('role, content, created_at')
-      .eq('agent', a)
-      .order('created_at', { ascending: true });
-    if (!data || data.length === 0) return null;
-    const lines = data.map(m => `${m.role === 'user' ? 'Will' : AGENTS[a].name}: ${m.content}`).join('\n');
-    return `--- Everything ${AGENTS[a].name} (${AGENTS[a].role}) has ever discussed with Will ---\n${lines}`;
+  const parts = await Promise.all(agents.map(async a => {
+    const mems = await dbLoadMemories(a);
+    if (!mems.length) return null;
+    return `--- ${AGENTS[a].name} (${AGENTS[a].role}) ---\n${mems.map(m => `• ${m.content}`).join('\n')}`;
   }));
-  return summaries.filter(Boolean).join('\n\n');
+  return parts.filter(Boolean).join('\n\n');
 }
 
 let pipelineData = JSON.parse(localStorage.getItem('pipelineData') || 'null') || PIPELINE_STAGES.map(s => ({ ...s, items: s.items.map(i => ({ ...i })) }));
 let agentSettings = JSON.parse(localStorage.getItem('agentSettings') || 'null') || {};
 let conversations = { marcus: [], alex: [], jordan: [], riley: [] };
+let currentSessionId = { marcus: null, alex: null, jordan: null, riley: null };
+let agentSessions = { marcus: [], alex: [], jordan: [], riley: [] };
 let currentAgent = 'marcus';
 let currentView = 'chat';
 let isLoading = false;
@@ -1093,6 +1200,10 @@ Object.keys(AGENTS).forEach(key => {
 
 function saveSettings() { localStorage.setItem('agentSettings', JSON.stringify(agentSettings)); }
 function savePipeline() { localStorage.setItem('pipelineData', JSON.stringify(pipelineData)); }
+function saveApiKey() {
+  const val = document.getElementById('apiKeyInput')?.value?.trim();
+  if (val) { localStorage.setItem('anthropicKey', val); alert('API key saved.'); }
+}
 
 function now() { return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
 function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; }
@@ -1121,6 +1232,19 @@ function buildAgentView(key) {
       </div>
       <div class="chat-pane active" id="chat-${key}"></div>
       <div class="settings-pane" id="settings-${key}">
+        ${key === 'marcus' ? `
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div>
+              <div class="settings-card-title">Anthropic API Key</div>
+              <div class="settings-card-sub">Required to chat with all agents</div>
+            </div>
+            <button class="save-btn" onclick="saveApiKey()">Save</button>
+          </div>
+          <div class="settings-card-body">
+            <input type="password" class="settings-input" id="apiKeyInput" placeholder="sk-ant-..." value="${getApiKey()}" />
+          </div>
+        </div>` : ''}
         <div class="settings-card">
           <div class="settings-card-header">
             <div>
@@ -1202,7 +1326,7 @@ function buildAgentView(key) {
 }
 
 function renderSidebar() {
-  document.getElementById('sidebarAgents').innerHTML = Object.entries(AGENTS).map(([key, a]) => `
+  const agentList = Object.entries(AGENTS).map(([key, a]) => `
     <div class="sidebar-agent ${key === currentAgent && currentView === 'agent' ? 'active' : ''}" onclick="switchAgent('${key}')">
       <div class="sidebar-avatar" style="background:${a.color}">${a.initials}</div>
       <div class="sidebar-agent-info">
@@ -1211,6 +1335,22 @@ function renderSidebar() {
       </div>
       <div class="sidebar-agent-status"></div>
     </div>`).join('');
+
+  let sessionList = '';
+  if (currentView === 'agent' && currentAgent) {
+    const sessions = agentSessions[currentAgent] || [];
+    sessionList = `
+      <div class="sidebar-divider"></div>
+      <button class="new-chat-btn" onclick="newChat('${currentAgent}')">+ New Chat</button>
+      <div class="sidebar-section-label">Recent Chats</div>
+      ${sessions.map(s => `
+        <div class="sidebar-session ${s.id === currentSessionId[currentAgent] ? 'active' : ''}" onclick="loadSession('${currentAgent}','${s.id}')">
+          <div class="sidebar-session-title">${s.title || 'New Chat'}</div>
+          <div class="sidebar-session-date">${new Date(s.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</div>
+        </div>`).join('')}`;
+  }
+
+  document.getElementById('sidebarAgents').innerHTML = agentList + sessionList;
 }
 
 function renderEmptyChat(key) {
@@ -1231,15 +1371,25 @@ function renderMessages(key) {
   const conv = conversations[key];
   const a = AGENTS[key];
   if (conv.length === 0) { renderEmptyChat(key); return; }
-  chat.innerHTML = conv.map(m => `
+  chat.innerHTML = conv.map((m, i) => `
     <div class="message ${m.role}">
       <div class="msg-avatar ${m.role === 'user' ? 'user-av' : ''}" style="${m.role === 'agent' ? `background:${a.color}` : ''}">${m.role === 'agent' ? a.initials : 'W'}</div>
       <div class="msg-content">
         <div class="msg-bubble">${formatContent(m.content)}</div>
-        <div class="msg-meta">${m.time}</div>
+        <div class="msg-meta">
+          ${m.time}
+          ${m.role === 'agent' ? `<button class="pin-btn" title="Save to memory" onclick="pinMessage('${key}',${i})">📌 Save</button>` : ''}
+        </div>
       </div>
     </div>`).join('');
   chat.scrollTop = chat.scrollHeight;
+}
+
+async function pinMessage(key, idx) {
+  const msg = conversations[key][idx];
+  if (!msg) return;
+  await dbSaveMemory(key, msg.content);
+  alert(`Saved to ${AGENTS[key].name}'s memory.`);
 }
 
 function showAgentTab(key, tab) {
@@ -1288,6 +1438,31 @@ function toggleAutonomous(key) {
   saveSettings();
 }
 
+async function newChat(key) {
+  // Summarize current session before starting new one
+  if (currentSessionId[key]) {
+    autoSummarize(key, currentSessionId[key]);
+    // Auto-title the session from first user message
+    const firstMsg = conversations[key].find(m => m.role === 'user');
+    if (firstMsg) {
+      const title = firstMsg.content.slice(0, 40) + (firstMsg.content.length > 40 ? '…' : '');
+      await dbUpdateSessionTitle(currentSessionId[key], title);
+    }
+  }
+  currentSessionId[key] = await dbCreateSession(key);
+  conversations[key] = [];
+  agentSessions[key] = await dbLoadSessions(key);
+  renderSidebar();
+  renderMessages(key);
+}
+
+async function loadSession(key, sessionId) {
+  currentSessionId[key] = sessionId;
+  conversations[key] = await dbLoadSessionMessages(sessionId);
+  renderMessages(key);
+  renderSidebar();
+}
+
 async function switchAgent(key) {
   currentAgent = key;
   currentView = 'agent';
@@ -1298,12 +1473,18 @@ async function switchAgent(key) {
   document.getElementById('contentArea').style.flexDirection = 'column';
   document.getElementById('contentArea').style.overflow = 'hidden';
   document.getElementById('contentArea').style.flex = '1';
+  // Load sessions list
+  agentSessions[key] = await dbLoadSessions(key);
+  // Start new session if none active
+  if (!currentSessionId[key]) {
+    if (agentSessions[key].length > 0) {
+      await loadSession(key, agentSessions[key][0].id);
+    } else {
+      await newChat(key);
+    }
+  }
   renderSidebar();
   updateNavTabs(key);
-  // Load persisted messages if not already in memory
-  if (conversations[key].length === 0) {
-    conversations[key] = await dbLoadMessages(key);
-  }
   showAgentTab(key, 'chat');
 }
 
@@ -1396,7 +1577,7 @@ async function sendMessage(key) {
   if (!text) return;
 
   conversations[key].push({ role: 'user', content: text, time: now() });
-  dbSaveMessage(key, 'user', text);
+  dbSaveMessage(key, 'user', text, currentSessionId[key]);
   input.value = '';
   input.style.height = 'auto';
   renderMessages(key);
@@ -1414,24 +1595,44 @@ async function sendMessage(key) {
   document.getElementById(`sendBtn-${key}`).disabled = true;
 
   try {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      typingEl.remove();
+      conversations[key].push({ role: 'agent', content: 'No API key set. Go to Settings → API Key and enter your Anthropic key.', time: now() });
+      renderMessages(key);
+      isLoading = false;
+      document.getElementById(`sendBtn-${key}`).disabled = false;
+      return;
+    }
     let systemPrompt = agentSettings[key]?.systemPrompt || AGENTS[key].systemPrompt;
+    // Inject saved memories for this agent
+    const myMemories = await dbLoadMemories(key);
+    if (myMemories.length) {
+      systemPrompt += `\n\n=== YOUR SAVED MEMORY ===\n${myMemories.map(m => `• ${m.content}`).join('\n')}`;
+    }
+    // Marcus also gets all team memories
     if (key === 'marcus') {
-      const teamMemory = await dbGetAllTeamMemory();
+      const teamMemory = await dbGetTeamMemory();
       if (teamMemory) {
-        systemPrompt += `\n\n=== COMPLETE TEAM MEMORY ===\nYou have full knowledge of every conversation Will has had with your team. Use this to stay informed, catch inconsistencies, and lead effectively.\n\n${teamMemory}`;
+        systemPrompt += `\n\n=== TEAM MEMORY ===\n${teamMemory}`;
       }
     }
     const apiMessages = conversations[key].map(m => ({ role: m.role === 'agent' ? 'assistant' : 'user', content: m.content }));
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
       body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1000, system: systemPrompt, messages: apiMessages })
     });
     const data = await res.json();
     const reply = data.content?.[0]?.text || 'Something went wrong.';
     typingEl.remove();
     conversations[key].push({ role: 'agent', content: reply, time: now() });
-    dbSaveMessage(key, 'agent', reply);
+    dbSaveMessage(key, 'agent', reply, currentSessionId[key]);
     renderMessages(key);
   } catch(e) {
     typingEl.remove();
